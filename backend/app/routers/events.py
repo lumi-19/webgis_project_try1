@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
-from ..database import SessionLocal
+from ..db import AsyncSessionLocal
+
 from ..schemas import EventIn
 from ..crud import create_event, get_events
 import os
@@ -8,7 +9,7 @@ import os
 router = APIRouter(prefix="/api/events", tags=["Events"])
 
 def get_db():
-    db = SessionLocal()
+    db = AsyncSessionLocal()
     try:
         yield db
     finally:

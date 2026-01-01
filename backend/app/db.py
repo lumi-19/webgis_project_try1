@@ -1,6 +1,6 @@
 """
 Database setup and models for DisasterScope.
-Async SQLAlchemy configuration.
+Async SQLAlchemy + PostGIS
 """
 
 import os
@@ -24,16 +24,15 @@ from sqlalchemy.orm import (
     sessionmaker,
 )
 
+from geoalchemy2 import Geometry
+
 # -------------------------------------------------
 # Environment
 # -------------------------------------------------
 
 load_dotenv()
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "sqlite+aiosqlite:///./disasters.db"
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # -------------------------------------------------
 # Engine & Session
@@ -57,37 +56,49 @@ Base = declarative_base()
 # Models
 # -------------------------------------------------
 
-# Update your db.py Event model
 class Event(Base):
-    __tablename__ = "events"
+    __tablename__ = "disaster_events"  # 🔥 USE POSTGIS TABLE
 
     id = Column(Integer, primary_key=True, index=True)
-    source = Column(String, index=True)  # "usgs", "gdacs", etc.
-    event_type = Column(String, index=True)  # "earthquake", "flood", etc.
+    source = Column(String, index=True)
+    event_type = Column(String, index=True)
     title = Column(String, nullable=True)
     description = Column(String, nullable=True)
-    latitude = Column(Float, nullable=True)
-    longitude = Column(Float, nullable=True)
-    magnitude = Column(Float, nullable=True)  # For earthquakes
-    severity = Column(String, nullable=True)  # Could be string like "Red", "Orange"
-    event_time = Column(DateTime, nullable=True)  # When the event happened
-    created_at = Column(DateTime, default=datetime.utcnow)  # When we stored it
+
+    magnitude = Column(Float, nullable=True)
+    severity = Column(String, nullable=True)
+
+    event_time = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # 🔥 Spatial column (PostGIS)
+    geom = Column(
+        Geometry(geometry_type="POINT", srid=4326),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("idx_disaster_events_geom", "geom", postgresql_using="gist"),
+    )
+
 
 class AirQuality(Base):
     __tablename__ = "air_quality"
 
     id = Column(Integer, primary_key=True, index=True)
-    source = Column(String, index=True)  # "openaq"
+    source = Column(String, index=True)
     location = Column(String, index=True)
-    parameter = Column(String, index=True)  # "pm25", "pm10", etc.
+    parameter = Column(String, index=True)
     value = Column(Float)
-    unit = Column(String)  # "µg/m³"
-    latitude = Column(Float, nullable=True)
-    longitude = Column(Float, nullable=True)
-    measured_at = Column(DateTime, nullable=True)  # When measurement was taken
-    created_at = Column(DateTime, default=datetime.utcnow)  # When we stored it
+    unit = Column(String)
 
+    measured_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
+    geom = Column(
+        Geometry(geometry_type="POINT", srid=4326),
+        nullable=True,
+    )
 
 # -------------------------------------------------
 # Init DB
@@ -96,3 +107,6 @@ class AirQuality(Base):
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+print("DATABASE_URL =", DATABASE_URL)
