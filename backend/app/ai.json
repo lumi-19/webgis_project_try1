@@ -1,0 +1,144 @@
+{
+  "name": "DisasterScope AI Assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "disasterscope-ai",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [-800, 0]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:8000/api/events",
+        "options": {}
+      },
+      "name": "Get Events",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-550, -200]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:8000/api/air-quality",
+        "options": {}
+      },
+      "name": "Get Air Quality",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-550, 0]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:8000/api/predictions/summary",
+        "options": {}
+      },
+      "name": "Get Predictions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-550, 200]
+    },
+    {
+      "parameters": {
+        "mode": "combine"
+      },
+      "name": "Merge Context",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [-300, 0]
+    },
+    {
+      "parameters": {
+        "functionCode": "const userQuestion = $json.body?.question || 'Explain current disaster situation.';\n\nreturn [{\n  json: {\n    system_prompt: `You are DisasterScope AI, an analytical assistant for a WebGIS disaster monitoring platform.\n\nRules:\n- Use ONLY provided data\n- Explain patterns clearly\n- Be cautious with predictions\n- Mention uncertainty\n- No speculation\n\n`,\n    user_prompt: userQuestion,\n    context: {\n      events: $items('Get Events')[0].json,\n      air_quality: $items('Get Air Quality')[0].json,\n      predictions: $items('Get Predictions')[0].json\n    }\n  }\n}];"
+      },
+      "name": "Build AI Prompt",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [-50, 0]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4.1-mini",
+        "messages": [
+          {
+            "role": "system",
+            "content": "={{$json.system_prompt}}"
+          },
+          {
+            "role": "user",
+            "content": "User Question: {{$json.user_prompt}}\n\nContext:\n{{$json.context}}"
+          }
+        ],
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "name": "AI Reasoning",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [200, 0],
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "responseBody": "={{$json.choices[0].message.content}}",
+        "options": {}
+      },
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [450, 0]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Get Events",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Air Quality",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Predictions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Events": {
+      "main": [[{ "node": "Merge Context", "type": "main", "index": 0 }]]
+    },
+    "Get Air Quality": {
+      "main": [[{ "node": "Merge Context", "type": "main", "index": 1 }]]
+    },
+    "Get Predictions": {
+      "main": [[{ "node": "Merge Context", "type": "main", "index": 2 }]]
+    },
+    "Merge Context": {
+      "main": [[{ "node": "Build AI Prompt", "type": "main", "index": 0 }]]
+    },
+    "Build AI Prompt": {
+      "main": [[{ "node": "AI Reasoning", "type": "main", "index": 0 }]]
+    },
+    "AI Reasoning": {
+      "main": [[{ "node": "Webhook Response", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true
+}

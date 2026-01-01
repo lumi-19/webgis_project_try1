@@ -1,0 +1,74 @@
+# .gitignore for Python FastAPI + React + Docker + VS Code
+
+## Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+## Virtual Environments
+venv/
+ENV/
+.env
+.venv
+env.bak/
+venv.bak/
+
+## IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+## React / Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.DS_Store
+
+## Docker
+.dockerignore
+.docker/
+*.dockerlint.json
+
+## Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+## Logs
+logs
+*.log
+
+## Runtime data
+tmp/
+temp/
+
+## OS generated
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

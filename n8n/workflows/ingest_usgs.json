@@ -1,0 +1,106 @@
+{
+  "name": "USGS Earthquakes Ingestion",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "ac10e3eb-7cd8-4cd8-b1b9-b45c508e78ae",
+      "name": "Triggered by Master",
+      "type": "n8n-nodes-base.start",
+      "typeVersion": 1,
+      "position": [
+        64,
+        672
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson",
+        "options": {}
+      },
+      "id": "0a29f245-6d86-4bd0-9dbb-ca235f246dea",
+      "name": "Fetch USGS Earthquakes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        320,
+        672
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:8000/api/ingest/events",
+        "jsonParameters": true,
+        "method": "POST",
+        "options": {}
+      },
+      "id": "f5a18e5c-0174-4cf5-9c8c-231117eefa13",
+      "name": "Send to Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        768,
+        672
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = items[0].json;\nconst features = input.features || [];\n\nif (!Array.isArray(features) || features.length === 0) {\n  return [];\n}\n\nreturn features.map(f => {\n  const props = f.properties || {};\n  const geom = f.geometry || {};\n  const coords = geom.coordinates || [];\n\n  return {\n    json: {\n      eventid: String(f.id),\n      eventtype: \"EQ\",\n      eventdate: props.time ? new Date(props.time).toISOString() : null,\n      latitude: coords[1],\n      longitude: coords[0],\n      magnitude: props.mag ?? null,\n      depth: coords[2] ?? null,\n      source: \"USGS\",\n      raw: f\n    }\n  };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        528,
+        672
+      ],
+      "id": "abbab800-46bb-4a46-badb-3f227e5f7144",
+      "name": "Normalize USGS Events"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Triggered by Master": {
+      "main": [
+        [
+          {
+            "node": "Fetch USGS Earthquakes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch USGS Earthquakes": {
+      "main": [
+        [
+          {
+            "node": "Normalize USGS Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize USGS Events": {
+      "main": [
+        [
+          {
+            "node": "Send to Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "6f4c5368-6cc3-44ca-ac7d-cbf3446e76a1",
+  "meta": {
+    "instanceId": "c56a5a46b6db6e4cac584f0934fbe5ba75869491b52e6651d3781909a7ec8632"
+  },
+  "id": "F43OAZH9KW9Yhm7N",
+  "tags": []
+}

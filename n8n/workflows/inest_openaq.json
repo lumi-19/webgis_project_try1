@@ -1,0 +1,69 @@
+{
+  "name": "OpenWeather Air Quality Ingestion",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-master-aq",
+      "name": "Triggered by Master",
+      "type": "n8n-nodes-base.start",
+      "typeVersion": 1,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.openweathermap.org/data/2.5/air_pollution",
+        "method": "GET",
+        "responseFormat": "json",
+        "queryParameters": {
+          "parameters": [
+            { "name": "lat", "value": "33.6844" },
+            { "name": "lon", "value": "73.0479" },
+            { "name": "appid", "value": "YOUR_API_KEY_HERE" }
+          ]
+        }
+      },
+      "id": "fetch-openweather-aq",
+      "name": "Fetch OpenWeather AQ",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = items[0].json;\n\nif (!data || !Array.isArray(data.list)) {\n  return [];\n}\n\n// Lat/Lon are known because we queried them\nconst lat = 33.6844;\nconst lon = 73.0479;\n\nconst events = [];\n\nfor (const entry of data.list) {\n  const timestamp = entry.dt * 1000;\n\n  for (const [pollutant, value] of Object.entries(entry.components)) {\n    events.push({\n      json: {\n        eventid: `openaq_${pollutant}_${entry.dt}_${lat}_${lon}`,\n        eventtype: \"aq\",\n        eventdate: new Date(timestamp).toISOString(),\n        latitude: lat,\n        longitude: lon,\n        magnitude: value,\n        source: \"OpenWeather\",\n        raw: entry\n      }\n    });\n  }\n}\n\nreturn events;"
+      },
+      "id": "normalize-openweather-aq",
+      "name": "Normalize AQ Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:8000/api/ingest/air-quality",
+        "method": "POST",
+        "jsonParameters": true
+      },
+      "id": "send-backend-aq",
+      "name": "Send AQ to Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [800, 300]
+    }
+  ],
+  "connections": {
+    "Triggered by Master": {
+      "main": [[{ "node": "Fetch OpenWeather AQ", "type": "main", "index": 0 }]]
+    },
+    "Fetch OpenWeather AQ": {
+      "main": [[{ "node": "Normalize AQ Events", "type": "main", "index": 0 }]]
+    },
+    "Normalize AQ Events": {
+      "main": [[{ "node": "Send AQ to Backend", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

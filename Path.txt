@@ -1,0 +1,48 @@
+disasterscope/
+│
+├─ .env                    # empty
+├─ .gitignore              # empty
+├─ docker-compose.yml      # empty
+├─ README.md               # empty
+│
+├─ backend/
+│  ├─ Dockerfile           # exists (empty for now)
+│  ├─ requirements.txt     # exists (empty)
+│  │
+│  └─ app/
+│     ├─ __init__.py
+│     ├─ api.py
+│     ├─ ai_agent.py
+│     ├─ cache.py
+│     └─ db.py
+│
+├─ frontend/
+│  └─ src/
+│     ├─ ai/
+│     │  ├─ ChatDock.jsx
+│     │  ├─ Chat.jsx
+│     │  ├─ ChatInput.jsx
+│     │  └─ ChatMessage.jsx
+│     │
+│     ├─ map/
+│     │  ├─ Map.jsx
+│     │  ├─ BaseMapSwitcher.jsx
+│     │  ├─ StatusBar.jsx
+│     │  └─ LayerPanel.jsx
+│     │
+│     ├─ Prediction/
+│     │  └─ Prediction.jsx
+│     │
+│     ├─ view/
+│     │  ├─ MapView.jsx
+│     │  └─ Playground.jsx
+│     │
+│     ├─ api.js
+│     ├─ App.jsx
+│     ├─ index.jsx
+│     └─ index.css
+│
+├─ scripts/
+│  ├─ ingest_gdacs.py
+│  ├─ ingest_openaq.py
+│  └─ ingest_usgs.py

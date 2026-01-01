@@ -1,0 +1,121 @@
+{
+  "name": "DisasterScope – Master Orchestrator",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:5678/webhook/usgs-ingest",
+        "method": "POST",
+        "responseFormat": "json",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "Trigger USGS Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:5678/webhook/openaq-ingest",
+        "method": "POST",
+        "responseFormat": "json",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "Trigger OpenAQ Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:5678/webhook/gdacs-ingest",
+        "method": "POST",
+        "responseFormat": "json",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "Trigger GDACS Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [950, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{ json: { status: \"ALL_INGESTIONS_TRIGGERED\", timestamp: new Date().toISOString() } }];"
+      },
+      "name": "Final Log",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1200, 300]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Trigger USGS Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger USGS Workflow": {
+      "main": [
+        [
+          {
+            "node": "Trigger OpenAQ Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger OpenAQ Workflow": {
+      "main": [
+        [
+          {
+            "node": "Trigger GDACS Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger GDACS Workflow": {
+      "main": [
+        [
+          {
+            "node": "Final Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "id": "DisasterScope-Master-Orchestrator"
+}

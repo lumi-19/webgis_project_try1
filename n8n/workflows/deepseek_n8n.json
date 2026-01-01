@@ -1,0 +1,394 @@
+{
+  "name": "DisasterScope Multi-Source Data Aggregation and Normalization",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "b8d07a63-cf3a-401d-ac2b-1eaf0d5cf432",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -208,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://earthquake.usgs.gov/fdsnws/event/1/query",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "format",
+              "value": "geojson"
+            },
+            {
+              "name": "starttime",
+              "value": "={{ $now.minus({ days: 1 }).toISO() }}"
+            },
+            {
+              "name": "minmagnitude",
+              "value": "4"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "036a243f-9266-465a-af16-da2e49f586e9",
+      "name": "USGS - Fetch Earthquakes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        16,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the USGS earthquake data from the previous node\nconst usgsData = $input.all();\n\n// Extract features array from the response\nconst features = usgsData[0].json.features || [];\n\n// Map each earthquake to normalized format matching backend model\nconst normalizedData = features.map(earthquake => {\n  const props = earthquake.properties;\n  const coords = earthquake.geometry.coordinates;\n  \n  // Convert magnitude to severity string\n  let severity = \"low\";\n  if (props.mag >= 6.0) severity = \"high\";\n  else if (props.mag >= 4.5) severity = \"moderate\";\n  \n  return {\n    json: {\n      source: \"usgs\",\n      event_type: \"earthquake\",\n      title: props.place || `M ${props.mag} Earthquake`,\n      description: `Magnitude: ${props.mag}, Depth: ${coords[2]}km`,\n      latitude: coords[1],\n      longitude: coords[0],\n      magnitude: props.mag,\n      severity: severity,\n      event_time: new Date(props.time).toISOString()\n    }\n  };\n});\n\nreturn normalizedData;"
+      },
+      "id": "7180858a-9321-4296-bdb7-ed2e8a6059a4",
+      "name": "USGS - Normalize Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/api/events",
+        "sendBody": true,
+        "specifyBody": "jsonArray",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-INGEST-KEY",
+              "value": "Thekinghahahahah183645"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "id": "047237ad-9691-4437-b058-a251cf529138",
+      "name": "USGS - Save to Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        464,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://www.gdacs.org/xml/rss.xml",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "060de02e-dc50-485e-9fa9-750d1fdf8d50",
+      "name": "GDACS - Fetch Disasters",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        16,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse XML from GDACS API and normalize disaster data\nconst inputData = $input.all();\nconst normalizedItems = [];\n\nfor (const item of inputData) {\n  const xmlData = item.json;\n  \n  let disasters = [];\n  \n  if (xmlData.rss && xmlData.rss.channel && xmlData.rss.channel.item) {\n    disasters = Array.isArray(xmlData.rss.channel.item) \n      ? xmlData.rss.channel.item \n      : [xmlData.rss.channel.item];\n  }\n  \n  for (const disaster of disasters) {\n    // Extract coordinates\n    let latitude = null;\n    let longitude = null;\n    \n    if (disaster['georss:point']) {\n      const coords = disaster['georss:point'].split(' ');\n      latitude = parseFloat(coords[0]);\n      longitude = parseFloat(coords[1]);\n    } else if (disaster['geo:lat'] && disaster['geo:long']) {\n      latitude = parseFloat(disaster['geo:lat']);\n      longitude = parseFloat(disaster['geo:long']);\n    }\n    \n    // Extract disaster type\n    let disasterType = 'unknown';\n    if (disaster.category) {\n      const category = disaster.category.toLowerCase();\n      if (category.includes('earthquake')) disasterType = 'earthquake';\n      else if (category.includes('flood')) disasterType = 'flood';\n      else if (category.includes('cyclone') || category.includes('hurricane')) disasterType = 'cyclone';\n      else if (category.includes('volcano')) disasterType = 'volcano';\n      else if (category.includes('drought')) disasterType = 'drought';\n      else if (category.includes('wildfire') || category.includes('fire')) disasterType = 'wildfire';\n    }\n    \n    // Extract severity\n    let severity = 'unknown';\n    if (disaster['gdacs:severity']) {\n      severity = disaster['gdacs:severity'];\n    } else if (disaster['gdacs:alertlevel']) {\n      severity = disaster['gdacs:alertlevel'];\n    }\n    \n    normalizedItems.push({\n      json: {\n        source: \"gdacs\",\n        event_type: disasterType,\n        title: disaster.title || 'Unknown Disaster',\n        description: disaster.description || '',\n        latitude: latitude,\n        longitude: longitude,\n        magnitude: null, // GDACS doesn't provide magnitude\n        severity: severity,\n        event_time: disaster.pubDate || new Date().toISOString()\n      }\n    });\n  }\n}\n\nreturn normalizedItems;"
+      },
+      "id": "1e9d3bad-9471-4937-b77c-8e497d3e3635",
+      "name": "GDACS - Normalize Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/api/events",
+        "sendBody": true,
+        "specifyBody": "jsonArray",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-INGEST-KEY",
+              "value": "Thekinghahahahah183645"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "id": "1d137c6f-1263-41fc-9e19-798172959d4a",
+      "name": "GDACS - Save to Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        464,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.openaq.org/v3/measurements",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "1000"
+            },
+            {
+              "name": "page",
+              "value": "1"
+            },
+            {
+              "name": "sort",
+              "value": "desc"
+            },
+            {
+              "name": "order_by",
+              "value": "datetime"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "b897f5ce8295801b678e7e485a3a79056216859f606bd194fb2353cee7260c10"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "8fe08b3e-e743-43a6-8287-60a4b1f98063",
+      "name": "OpenAQ - Fetch Air Quality",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        16,
+        832
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "79EvcijR5N831p4Q",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize OpenAQ v3 air quality data\nconst inputData = $input.all();\nconst normalizedData = [];\n\nfor (const item of inputData) {\n  const results = item.json.results || [];\n  \n  for (const location of results) {\n    const locationName = location.name || location.location || 'Unknown Location';\n    const latitude = location.coordinates?.latitude || null;\n    const longitude = location.coordinates?.longitude || null;\n    \n    const latestMeasurements = location.measurements || location.latest || [];\n    \n    for (const measurement of latestMeasurements) {\n      normalizedData.push({\n        json: {\n          source: \"openaq\",\n          location: locationName,\n          parameter: measurement.parameter || 'unknown',\n          value: measurement.value || 0,\n          unit: measurement.unit || 'µg/m³',\n          latitude: latitude,\n          longitude: longitude,\n          measured_at: measurement.lastUpdated || measurement.datetime || new Date().toISOString()\n        }\n      });\n    }\n  }\n}\n\nreturn normalizedData;"
+      },
+      "id": "e197f427-41d9-43d5-baad-57ee194388db",
+      "name": "OpenAQ - Normalize Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        832
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/api/air-quality",
+        "sendBody": true,
+        "specifyBody": "jsonArray",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-INGEST-KEY",
+              "value": "Thekinghahahahah183645"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "id": "d1bbffd3-0bb2-4add-888c-da925493276b",
+      "name": "OpenAQ - Save to Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        464,
+        832
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "USGS - Fetch Earthquakes",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "GDACS - Fetch Disasters",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "OpenAQ - Fetch Air Quality",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "USGS - Fetch Earthquakes": {
+      "main": [
+        [
+          {
+            "node": "USGS - Normalize Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "USGS - Normalize Data": {
+      "main": [
+        [
+          {
+            "node": "USGS - Save to Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GDACS - Fetch Disasters": {
+      "main": [
+        [
+          {
+            "node": "GDACS - Normalize Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GDACS - Normalize Data": {
+      "main": [
+        [
+          {
+            "node": "GDACS - Save to Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAQ - Fetch Air Quality": {
+      "main": [
+        [
+          {
+            "node": "OpenAQ - Normalize Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAQ - Normalize Data": {
+      "main": [
+        [
+          {
+            "node": "OpenAQ - Save to Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "64370181-0576-4fa3-84e5-729f3af85e0e",
+  "meta": {
+    "instanceId": "6c6f0a7714709ddd33b22e77c332f66f7ba14129d224bf95cc94a5568989edbe"
+  },
+  "id": "TlmRVmHc0BxqbAEu",
+  "tags": []
+}

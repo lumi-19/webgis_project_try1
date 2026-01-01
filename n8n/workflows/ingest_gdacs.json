@@ -1,0 +1,78 @@
+{
+  "name": "GDACS Disasters Ingestion",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "29b58ae5-47a9-4ff7-a584-ecefbef161a6",
+      "name": "Triggered by Master",
+      "type": "n8n-nodes-base.start",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "url": "https://www.gdacs.org/xml/rss.xml",
+        "responseFormat": "string",
+        "options": {}
+      },
+      "id": "983b390a-409b-46de-85bc-1b4292d625d3",
+      "name": "Fetch GDACS Disasters",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [256, 0]
+    },
+    {
+      "parameters": {
+        "options": {
+          "normalize": true
+        }
+      },
+      "id": "64b5c1ee-5945-4b26-a971-0081038e9a1c",
+      "name": "XML",
+      "type": "n8n-nodes-base.xml",
+      "typeVersion": 1,
+      "position": [464, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rss = items[0].json?.rss?.channel?.item;\nif (!rss) return [];\n\nconst events = Array.isArray(rss) ? rss : [rss];\n\nfunction mapEventType(title = \"\") {\n  const t = title.toUpperCase();\n  if (t.includes(\"EARTHQUAKE\") || t.includes(\"EQ\")) return \"EQ\";\n  if (t.includes(\"CYCLONE\") || t.includes(\"HURRICANE\") || t.includes(\"TYPHOON\")) return \"TC\";\n  if (t.includes(\"FLOOD\")) return \"FL\";\n  if (t.includes(\"VOLCANO\") || t.includes(\"ERUPTION\")) return \"VO\";\n  return \"OTHER\";\n}\n\nreturn events.map(e => {\n  const point = e['georss:point']?.split(' ') || [];\n\n  return {\n    json: {\n      eventid: String(e.guid || e.link || Math.random()),\n      eventtype: mapEventType(e.title),\n      eventdate: e.pubDate ? new Date(e.pubDate).toISOString() : null,\n      latitude: point.length === 2 ? Number(point[0]) : null,\n      longitude: point.length === 2 ? Number(point[1]) : null,\n      source: \"GDACS\",\n      raw: e\n    }\n  };\n});"
+      },
+      "id": "8ba9c895-32bd-4060-b5da-67ee3044ab5a",
+      "name": "Normalize GDACS Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 0]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:8000/api/ingest/events",
+        "jsonParameters": true,
+        "method": "POST",
+        "options": {}
+      },
+      "id": "62448a40-8262-4c64-9f92-775545cf7da8",
+      "name": "Send to Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [880, 0]
+    }
+  ],
+  "connections": {
+    "Triggered by Master": {
+      "main": [[{ "node": "Fetch GDACS Disasters", "type": "main", "index": 0 }]]
+    },
+    "Fetch GDACS Disasters": {
+      "main": [[{ "node": "XML", "type": "main", "index": 0 }]]
+    },
+    "XML": {
+      "main": [[{ "node": "Normalize GDACS Events", "type": "main", "index": 0 }]]
+    },
+    "Normalize GDACS Events": {
+      "main": [[{ "node": "Send to Backend", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
