@@ -75,8 +75,13 @@ def post_events(events: List[Dict[str, Any]]) -> None:
         if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
             continue
 
-        # 🔥 NORMALIZE DATETIME HERE
-        e["event_time"] = normalize_datetime(e.get("event_time"))
+        # 🔥 NORMALIZE DATETIME HERE → ensure ISO strings for JSON
+        dt = normalize_datetime(e.get("event_time"))
+        if dt is None:
+            e["event_time"] = None
+        else:
+            # make timezone-naive UTC explicit ISO string
+            e["event_time"] = dt.isoformat()
 
         clean_events.append(e)
 
@@ -84,15 +89,18 @@ def post_events(events: List[Dict[str, Any]]) -> None:
         print("⚠️ All disaster events invalid after sanitization")
         return
 
-    resp = requests.post(
-        f"{BACKEND_URL}/api/events/bulk",
-        json=clean_events,
-        headers=HEADERS,
-        timeout=30,
-    )
-
-    resp.raise_for_status()
-    print(f"✅ Ingested {len(clean_events)} disaster events")
+    try:
+        resp = requests.post(
+            f"{BACKEND_URL}/api/events/bulk",
+            json=clean_events,
+            headers=HEADERS,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        print(f"✅ Ingested {len(clean_events)} disaster events")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Failed to ingest events: {e}")
+        return
 
 
 def post_air_quality(records: List[Dict[str, Any]]) -> None:
@@ -100,14 +108,28 @@ def post_air_quality(records: List[Dict[str, Any]]) -> None:
         print("⚠️ No air-quality records to ingest")
         return
 
-    resp = requests.post(
-        f"{BACKEND_URL}/api/air-quality",
-        json=records,
-        headers=HEADERS,
-        timeout=30,
-    )
-    resp.raise_for_status()
-    print(f"✅ Ingested {len(records)} air-quality records")
+    # Normalize any datetime objects to ISO strings
+    clean = []
+    for r in records:
+        dt = normalize_datetime(r.get("measured_at"))
+        if dt is None:
+            r["measured_at"] = None
+        else:
+            r["measured_at"] = dt.isoformat()
+        clean.append(r)
+
+    try:
+        resp = requests.post(
+            f"{BACKEND_URL}/api/air-quality",
+            json=clean,
+            headers=HEADERS,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        print(f"✅ Ingested {len(clean)} air-quality records")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Failed to ingest air-quality records: {e}")
+        return
 
 # -------------------------------------------------
 # GDACS – Multi-hazard disasters
@@ -162,6 +184,8 @@ def fetch_gdacs_events(limit: int = 25) -> List[Dict[str, Any]]:
     except Exception as e:
         print(f"❌ GDACS failed: {e}")
         return []
+api_key_present = bool(os.getenv("OPENAQ_API_KEY", ""))
+print("🔑 OPENAQ_API_KEY present:", api_key_present)
 
 # -------------------------------------------------
 # USGS – Earthquakes
@@ -221,36 +245,42 @@ def fetch_usgs_earthquakes(limit: int = 25) -> List[Dict[str, Any]]:
 # -------------------------------------------------
 
 def fetch_openaq(limit: int = 50) -> List[Dict[str, Any]]:
-    print("🌫 Fetching OpenAQ air quality...")
-    url = "https://api.openaq.org/v2/latest"
+    print("🌫 Fetching OpenAQ air quality (v3)...")
+
+    url = "https://api.openaq.org/v3/measurements"
+    api_key = os.getenv("OPENAQ_API_KEY", "")
+    headers = {"X-API-Key": api_key} if api_key else {}
 
     params = {
         "limit": limit,
         "parameter": ["pm25", "pm10"],
+        "sort": "desc"
     }
 
     records: List[Dict[str, Any]] = []
 
     try:
-        data = requests.get(url, params=params, timeout=20).json()
-        results = data.get("results", [])
+        resp = requests.get(url, headers=headers, params=params, timeout=20)
+        if resp.status_code != 200:
+            print(f"❌ OpenAQ HTTP {resp.status_code}: {resp.text[:500]}")
+        resp.raise_for_status()
+        data = resp.json()
 
-        for loc in results:
-            coords = loc.get("coordinates")
+        for r in data.get("results", []):
+            coords = r.get("coordinates")
             if not coords:
                 continue
 
-            for m in loc.get("measurements", []):
-                records.append({
-                    "source": "openaq",
-                    "location": loc.get("location"),
-                    "parameter": m.get("parameter"),
-                    "value": m.get("value"),
-                    "unit": m.get("unit"),
-                    "latitude": coords.get("latitude"),
-                    "longitude": coords.get("longitude"),
-                    "measured_at": normalize_datetime(m.get("lastUpdated")),
-                })
+            records.append({
+                "source": "openaq",
+                "location": r.get("location"),
+                "parameter": r.get("parameter"),
+                "value": r.get("value"),
+                "unit": r.get("unit"),
+                "latitude": coords.get("latitude"),
+                "longitude": coords.get("longitude"),
+                "measured_at": r.get("date", {}).get("utc"),
+            })
 
         print(f"📊 OpenAQ records parsed: {len(records)}")
         return records
@@ -259,23 +289,87 @@ def fetch_openaq(limit: int = 50) -> List[Dict[str, Any]]:
         print(f"❌ OpenAQ failed: {e}")
         return []
 
+
 # -------------------------------------------------
-# Main
+# OpenAQ key validation & diagnostics
+# -------------------------------------------------
+
+def diagnose_openaq_key() -> None:
+    """Try several v3 endpoints with and without the API key and print results.
+    Does NOT print the key value (only presence).
+    """
+    api_key = os.getenv("OPENAQ_API_KEY", "")
+    base = "https://api.openaq.org"
+    endpoints = ["/v3/measurements", "/v3/locations", "/v3/parameters"]
+
+    print("🔬 Running OpenAQ diagnostic (requests with and without X-API-Key)")
+    for ep in endpoints:
+        url = base + ep
+        params = {"limit": 1}
+        for use_key in (False, True):
+            label = f"with key" if use_key else "without key"
+            print(f"  • Requesting {ep} {label} → {url}?limit=1")
+            headers = {"X-API-Key": api_key} if (use_key and api_key) else {}
+            try:
+                resp = requests.get(url, headers=headers, params=params, timeout=10)
+                snippet = resp.text.replace("\n", " ")[:300]
+                print(f"    → HTTP {resp.status_code} | using_key={use_key} | snippet={snippet}")
+            except requests.RequestException as e:
+                print(f"    → Request failed: {e}")
+
+
+def validate_openaq_key() -> bool:
+    api_key = os.getenv("OPENAQ_API_KEY", "")
+    if not api_key:
+        print("❌ OPENAQ_API_KEY not set. Please add it to your .env or environment.")
+        return False
+
+    # Quick authenticated check against a simple documented endpoint
+    url = "https://api.openaq.org/v3/locations"
+    try:
+        print("🔎 Performing quick authenticated request to /v3/locations?limit=1")
+        resp = requests.get(url, headers={"X-API-Key": api_key}, params={"limit": 1}, timeout=10)
+        print(f"🔎 Quick check HTTP {resp.status_code}")
+
+        if resp.status_code == 401:
+            print("❌ Unauthorized. The API key appears invalid or needs to be enabled.")
+            print("Response snippet:", resp.text[:500])
+            print("Running extended diagnostic...")
+            diagnose_openaq_key()
+            return False
+
+        if resp.status_code == 404:
+            print("❌ Not Found (404) for /v3/locations — unexpected. Running full diagnosis.")
+            diagnose_openaq_key()
+            return False
+
+        resp.raise_for_status()
+        print("✅ OpenAQ key accepted (quick check)")
+        return True
+
+    except requests.RequestException as e:
+        print(f"❌ OpenAQ key check failed: {e}")
+        print("Running extended diagnostic...")
+        diagnose_openaq_key()
+        return False
+
+
+# -------------------------------------------------
+# Main (OpenAQ-only)
 # -------------------------------------------------
 
 def main():
-    print("\n🚀 DisasterScope – Unified Ingestion Started\n")
+    print("\n🚀 DisasterScope – Unified Ingestion Started (OpenAQ-only mode)\n")
 
-    disasters: List[Dict[str, Any]] = []
-    disasters += fetch_gdacs_events()
-    disasters += fetch_usgs_earthquakes()
-
-    post_events(disasters)
+    if not validate_openaq_key():
+        print("Aborting: OpenAQ validation failed. Fix API key and re-run.")
+        return
 
     air_quality = fetch_openaq()
     post_air_quality(air_quality)
 
-    print("\n🎉 Ingestion complete – backend is now data-ready\n")
+    print("\n🎉 Ingestion complete – backend is now data-ready (OpenAQ-only)\n")
+
 
 if __name__ == "__main__":
     main()

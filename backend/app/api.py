@@ -105,7 +105,12 @@ class AirQualityCreate(BaseModel):
 # -------------------------------------------------------------------
 # Events (READ) — GEOJSON
 # -------------------------------------------------------------------
-
+def to_utc_naive(dt: datetime | None) -> datetime:
+    if dt is None:
+        return datetime.utcnow()
+    if dt.tzinfo is not None:
+        return dt.astimezone(tz=None).replace(tzinfo=None)
+    return dt
 @app.get("/api/events")
 async def get_events(
     db: AsyncSession = Depends(get_db),
@@ -174,7 +179,8 @@ async def create_event(
         longitude=event.longitude,
         magnitude=event.magnitude,
         severity=event.severity,
-        event_time=event.event_time or datetime.utcnow(),
+        event_time=to_utc_naive(event.event_time),
+
     )
 
     db.add(db_event)

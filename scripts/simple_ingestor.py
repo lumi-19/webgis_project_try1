@@ -206,16 +206,16 @@ async def fetch_and_save_openaq():
     headers = {}
     
     # Optional: Add your OpenAQ API key if you have one
-    api_key = os.getenv("OPENAQ_API_KEY", "b897f5ce8295801b678e7e485a3a79056216859f606bd194fb2353cee7260c10")
+    api_key = os.getenv("OPENAQ_API_KEY", "")
     if api_key:
-        headers["X-API-Key"] = 'Theking123'
+        headers["X-API-Key"] = api_key
     
     # Fetch data
     response = requests.get(url, params=params, headers=headers)
     
     if response.status_code != 200:
         print(f"❌ Failed to fetch OpenAQ: {response.status_code}")
-        print(f"Response: {response.text[:200]}")
+        print(f"Response: {response.text[:500]}")
         return 0
     
     data = response.json()
