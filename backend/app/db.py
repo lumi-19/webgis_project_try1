@@ -1,10 +1,17 @@
 """
-Database setup and models for DisasterScope.
-Async SQLAlchemy + PostGIS
+Database setup and models for DisasterScope
+Async SQLAlchemy + PostGIS (WebGIS-ready)
 """
 
+# -------------------------------------------------
+# Standard library
+# -------------------------------------------------
 import os
 from datetime import datetime
+
+# -------------------------------------------------
+# Third-party
+# -------------------------------------------------
 from dotenv import load_dotenv
 
 from sqlalchemy import (
@@ -16,8 +23,8 @@ from sqlalchemy import (
     Index,
 )
 from sqlalchemy.ext.asyncio import (
-    create_async_engine,
     AsyncSession,
+    create_async_engine,
 )
 from sqlalchemy.orm import (
     declarative_base,
@@ -29,19 +36,26 @@ from geoalchemy2 import Geometry
 # -------------------------------------------------
 # Environment
 # -------------------------------------------------
-
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+asyncpg://postgres:Gondal.io@localhost:5432/disasterscope",
+)
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set")
+
+print("DB URL:", DATABASE_URL)
 
 # -------------------------------------------------
-# Engine & Session
+# Engine & Session (ASYNC)
 # -------------------------------------------------
 
 engine = create_async_engine(
     DATABASE_URL,
-    echo=False,
-    future=True,
+    echo=False,              # set True only for SQL debugging
+    pool_pre_ping=True,
 )
 
 AsyncSessionLocal = sessionmaker(
@@ -57,28 +71,40 @@ Base = declarative_base()
 # -------------------------------------------------
 
 class Event(Base):
-    __tablename__ = "disaster_events"  # 🔥 USE POSTGIS TABLE
+    __tablename__ = "disaster_events"
 
-    id = Column(Integer, primary_key=True, index=True)
+    # --- Core identity ---
+    id = Column(Integer, primary_key=True)
+
+    # --- Metadata ---
     source = Column(String, index=True)
-    event_type = Column(String, index=True)
-    title = Column(String, nullable=True)
-    description = Column(String, nullable=True)
+    event_type = Column(String, index=True, nullable=False)
 
-    magnitude = Column(Float, nullable=True)
-    severity = Column(String, nullable=True)
+    title = Column(String)
+    description = Column(String)
+    severity = Column(String)
 
-    event_time = Column(DateTime, nullable=True)
+    magnitude = Column(Float)
+
+    # --- Time ---
+    event_time = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # 🔥 Spatial column (PostGIS)
+    # --- Spatial (explicit + geometry) ---
+    latitude = Column(Float)
+    longitude = Column(Float)
+
     geom = Column(
-        Geometry(geometry_type="POINT", srid=4326),
-        nullable=False,
+        Geometry("POINT", srid=4326),
+        nullable=True,   # IMPORTANT: allow missing geometry
     )
 
     __table_args__ = (
-        Index("idx_disaster_events_geom", "geom", postgresql_using="gist"),
+        Index(
+            "idx_disaster_events_geom",
+            "geom",
+            postgresql_using="gist",
+        ),
     )
 
 
@@ -86,27 +112,26 @@ class AirQuality(Base):
     __tablename__ = "air_quality"
 
     id = Column(Integer, primary_key=True, index=True)
+
     source = Column(String, index=True)
     location = Column(String, index=True)
     parameter = Column(String, index=True)
+
     value = Column(Float)
     unit = Column(String)
 
-    measured_at = Column(DateTime, nullable=True)
+    measured_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     geom = Column(
-        Geometry(geometry_type="POINT", srid=4326),
+        Geometry("POINT", srid=4326),
         nullable=True,
     )
 
 # -------------------------------------------------
-# Init DB
+# Database init (SAFE: schema already exists)
 # -------------------------------------------------
 
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
-
-print("DATABASE_URL =", DATABASE_URL)
