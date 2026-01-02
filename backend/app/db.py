@@ -99,13 +99,7 @@ class Event(Base):
         nullable=True,   # IMPORTANT: allow missing geometry
     )
 
-    __table_args__ = (
-        Index(
-            "idx_disaster_events_geom",
-            "geom",
-            postgresql_using="gist",
-        ),
-    )
+    
 
 
 class AirQuality(Base):
@@ -134,4 +128,7 @@ class AirQuality(Base):
 
 async def init_db() -> None:
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(
+            lambda sync_conn: Base.metadata.create_all(bind=sync_conn)
+        )
+
