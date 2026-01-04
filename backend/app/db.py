@@ -120,6 +120,8 @@ class AirQuality(Base):
     geom = Column(
         Geometry("POINT", srid=4326),
         nullable=True,
+
+    
     )
 
 # -------------------------------------------------
