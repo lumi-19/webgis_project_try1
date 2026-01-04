@@ -1,9 +1,5 @@
 
 
-Of course! Here is a professionally formatted README.md file based on your outline and content. It's structured for clarity, visual appeal, and ease of use on GitHub.
-
----
-
 # 🌋 DISASTERSCOPE
 
 **AI-Assisted WebGIS for Real-Time Disaster Intelligence**
