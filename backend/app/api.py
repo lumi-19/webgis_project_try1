@@ -10,7 +10,7 @@ import os
 from datetime import datetime
 from typing import List, Optional, AsyncGenerator
 
-from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import FastAPI, Depends, HTTPException, Header, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -81,6 +81,7 @@ class EventCreate(BaseModel):
     magnitude: Optional[float] = None
     severity: Optional[str] = None
     event_time: Optional[datetime] = None
+    location_accuracy: Optional[str] = None
 
 class AirQualityCreate(BaseModel):
     source: str
@@ -140,31 +141,61 @@ async def get_events(
     })
 
 # -------------------------------------------------
+# Background Task: Async DB Insert
+# -------------------------------------------------
+async def insert_events_background(events_data: List[dict]):
+    """Background task to insert events into database asynchronously"""
+    async with AsyncSessionLocal() as session:
+        try:
+            for e_data in events_data:
+                session.add(Event(
+                    source=e_data["source"],
+                    event_type=e_data["event_type"],
+                    title=e_data.get("title"),
+                    description=e_data.get("description"),
+                    latitude=e_data.get("latitude"),
+                    longitude=e_data.get("longitude"),
+                    magnitude=e_data.get("magnitude"),
+                    severity=e_data.get("severity"),
+                    event_time=to_utc_naive(e_data.get("event_time")),
+                    location_accuracy=e_data.get("location_accuracy"),
+                    geom=make_geom(e_data.get("latitude"), e_data.get("longitude")),
+                ))
+            
+            await session.flush()
+            await session.commit()
+            print(f"✅ Background insert complete: {len(events_data)} events")
+        except Exception as e:
+            print(f"❌ Background insert failed: {e}")
+            await session.rollback()
+            raise
+
+# -------------------------------------------------
 # WRITE – Events (Bulk)
 # -------------------------------------------------
 @app.post("/api/events/bulk")
 async def create_events_bulk(
     events: List[EventCreate],
-    db: AsyncSession = Depends(get_db),
     authorized: None = Depends(verify_api_key),
 ):
-    for e in events:
-        db.add(Event(
-            source=e.source,
-            event_type=e.event_type,
-            title=e.title,
-            description=e.description,
-            latitude=e.latitude,
-            longitude=e.longitude,
-            magnitude=e.magnitude,
-            severity=e.severity,
-            event_time=to_utc_naive(e.event_time),
-            geom=make_geom(e.latitude, e.longitude),
-        ))
-    print("🧪 Objects pending:", len(db.new))
+    events_data = [
+        {
+            "source": e.source,
+            "event_type": e.event_type,
+            "title": e.title,
+            "description": e.description,
+            "latitude": e.latitude,
+            "longitude": e.longitude,
+            "magnitude": e.magnitude,
+            "severity": e.severity,
+            "event_time": e.event_time,
+            "location_accuracy": e.location_accuracy,
+        }
+        for e in events
+    ]
 
-    await db.flush()
-    await db.commit()
+    # 🔥 NO BACKGROUND TASK
+    await insert_events_background(events_data)
 
     return {"status": "inserted", "count": len(events)}
 

@@ -51,10 +51,11 @@ def infer_country_coords(text: str):
 def fetch_gdacs_events(limit: int = 25) -> List[Dict[str, Any]]:
     print("🌪️ Fetching GDACS disasters...")
     url = "https://www.gdacs.org/xml/rss.xml"
-    events = []
+    events: List[Dict[str, Any]] = []
 
     try:
-        resp = requests.get(url, timeout=20)
+        resp = requests.get(url, timeout=120)
+        resp.raise_for_status()
         root = ET.fromstring(resp.content)
 
         for item in root.findall(".//item")[:limit]:
@@ -73,11 +74,15 @@ def fetch_gdacs_events(limit: int = 25) -> List[Dict[str, Any]]:
             elif "earthquake" in t:
                 event_type = "earthquake"
             else:
-                continue  # skip unknown types
+                continue  # unsupported GDACS item
 
+            # ---- Spatial inference (NEVER SKIP) ----
             lat, lon = infer_country_coords(title + " " + description)
-            if lat is None:
-                continue  # no spatial fallback → skip
+            location_accuracy = "country_centroid"
+
+            if lat is None or lon is None:
+                lat, lon = 0.0, 0.0
+                location_accuracy = "unknown"
 
             events.append({
                 "source": "gdacs",
@@ -87,7 +92,8 @@ def fetch_gdacs_events(limit: int = 25) -> List[Dict[str, Any]]:
                 "severity": "moderate",
                 "latitude": lat,
                 "longitude": lon,
-                "event_time": normalize_datetime(datetime.utcnow()),
+                "location_accuracy": location_accuracy,
+                "event_time": datetime.utcnow().isoformat(),
             })
 
         print(f"✅ GDACS events parsed: {len(events)}")
@@ -97,9 +103,6 @@ def fetch_gdacs_events(limit: int = 25) -> List[Dict[str, Any]]:
         print(f"❌ GDACS failed: {e}")
         return []
 
-# -------------------------------------------------
-# USGS Earthquakes
-# -------------------------------------------------
 
 def fetch_usgs_earthquakes(limit: int = 25) -> List[Dict[str, Any]]:
     print("🌍 Fetching USGS earthquakes...")
@@ -128,9 +131,10 @@ def fetch_usgs_earthquakes(limit: int = 25) -> List[Dict[str, Any]]:
                 "severity": "high" if (props.get("mag") or 0) >= 6 else "moderate",
                 "latitude": lat,
                 "longitude": lon,
-                "event_time": normalize_datetime(
-                    datetime.fromtimestamp(props["time"] / 1000)
-                ),
+                "event_time": datetime.fromtimestamp(
+                    props["time"] / 1000
+                    ).isoformat(),
+
             })
 
         print(f"✅ USGS earthquakes: {len(events)}")
@@ -140,9 +144,6 @@ def fetch_usgs_earthquakes(limit: int = 25) -> List[Dict[str, Any]]:
         print(f"❌ USGS failed: {e}")
         return []
 
-# -------------------------------------------------
-# Main
-# -------------------------------------------------
 
 def main():
     disasters = fetch_gdacs_events() + fetch_usgs_earthquakes()

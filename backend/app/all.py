@@ -1,267 +1,422 @@
-#api.py 
-
-"""
-FastAPI application for DisasterScope (Layer 2).
-
-Public API:
-- GET /api/health
-- GET /api/events
-- GET /api/events/{id}
-- GET /api/air-quality
-- GET /api/predictions/summary
-
-Write API:
-- POST /api/events/ingest
-- POST /api/air-quality/ingest
-"""
-
-from typing import List, Optional, AsyncGenerator
+#!/usr/bin/env python3
+#get_data.py
+import os
+import requests
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+from typing import List, Dict, Any
+from dotenv import load_dotenv
 
-from fastapi import FastAPI, Depends, HTTPException, Query
+load_dotenv()
+
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+INGEST_KEY = os.getenv("INGEST_API_KEY", "Theking123")
+
+HEADERS = {
+    "X-INGEST-KEY": INGEST_KEY,
+    "Content-Type": "application/json",
+}
+
+# -------------------------------------------------
+# Helpers
+# -------------------------------------------------
+
+COUNTRY_CENTROIDS = {
+    "pakistan": (30.3753, 69.3451),
+    "india": (20.5937, 78.9629),
+    "china": (35.8617, 104.1954),
+    "japan": (36.2048, 138.2529),
+    "philippines": (12.8797, 121.7740),
+    "indonesia": (-0.7893, 113.9213),
+    "turkey": (38.9637, 35.2433),
+    "italy": (41.8719, 12.5674),
+    "mexico": (23.6345, -102.5528),
+    "united states": (37.0902, -95.7129),
+}
+
+def normalize_datetime(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+def infer_country_coords(text: str):
+    text = text.lower()
+    for country, (lat, lon) in COUNTRY_CENTROIDS.items():
+        if country in text:
+            return lat, lon
+    return None, None
+
+# -------------------------------------------------
+# GDACS
+# -------------------------------------------------
+
+def fetch_gdacs_events(limit: int = 25) -> List[Dict[str, Any]]:
+    print("🌪️ Fetching GDACS disasters...")
+    url = "https://www.gdacs.org/xml/rss.xml"
+    events = []
+
+    try:
+        resp = requests.get(url, timeout=20)
+        root = ET.fromstring(resp.content)
+
+        for item in root.findall(".//item")[:limit]:
+            title = item.findtext("title") or ""
+            description = item.findtext("description") or ""
+
+            t = title.lower()
+            if "flood" in t:
+                event_type = "flood"
+            elif "cyclone" in t or "hurricane" in t:
+                event_type = "cyclone"
+            elif "fire" in t:
+                event_type = "wildfire"
+            elif "volcano" in t:
+                event_type = "volcano"
+            elif "earthquake" in t:
+                event_type = "earthquake"
+            else:
+                continue  # skip unknown types
+
+            lat, lon = infer_country_coords(title + " " + description)
+            if lat is None:
+                continue  # no spatial fallback → skip
+
+            events.append({
+                "source": "gdacs",
+                "event_type": event_type,
+                "title": title[:120],
+                "description": description[:300],
+                "severity": "moderate",
+                "latitude": lat,
+                "longitude": lon,
+                "event_time": normalize_datetime(datetime.utcnow()),
+            })
+
+        print(f"✅ GDACS events parsed: {len(events)}")
+        return events
+
+    except Exception as e:
+        print(f"❌ GDACS failed: {e}")
+        return []
+
+# -------------------------------------------------
+# USGS Earthquakes
+# -------------------------------------------------
+
+def fetch_usgs_earthquakes(limit: int = 25) -> List[Dict[str, Any]]:
+    print("🌍 Fetching USGS earthquakes...")
+    url = "https://earthquake.usgs.gov/fdsnws/event/1/query"
+
+    params = {
+        "format": "geojson",
+        "starttime": (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d"),
+        "minmagnitude": 4,
+        "limit": limit,
+    }
+
+    events = []
+
+    try:
+        data = requests.get(url, params=params, timeout=20).json()
+
+        for f in data.get("features", []):
+            props = f["properties"]
+            lon, lat, _ = f["geometry"]["coordinates"]
+
+            events.append({
+                "source": "usgs",
+                "event_type": "earthquake",
+                "title": props.get("place", "Earthquake"),
+                "severity": "high" if (props.get("mag") or 0) >= 6 else "moderate",
+                "latitude": lat,
+                "longitude": lon,
+                "event_time": normalize_datetime(
+                    datetime.fromtimestamp(props["time"] / 1000)
+                ),
+            })
+
+        print(f"✅ USGS earthquakes: {len(events)}")
+        return events
+
+    except Exception as e:
+        print(f"❌ USGS failed: {e}")
+        return []
+
+# -------------------------------------------------
+# Main
+# -------------------------------------------------
+
+def main():
+    disasters = fetch_gdacs_events() + fetch_usgs_earthquakes()
+
+    if not disasters:
+        print("⚠️ No disasters to ingest")
+        return
+
+    resp = requests.post(
+        f"{BACKEND_URL}/api/events/bulk",
+        json=disasters,
+        headers=HEADERS,
+        timeout=20,
+    )
+
+    if resp.ok:
+        print(f"🚀 Ingested {len(disasters)} disaster events")
+    else:
+        print(f"❌ Backend error: {resp.status_code} {resp.text}")
+
+if __name__ == "__main__":
+    main()
+
+
+
+#api.py
+
+
+"""
+DisasterScope Backend – FINAL STABLE VERSION
+FastAPI + Async SQLAlchemy + PostGIS
+"""
+
+# -------------------------------------------------
+# Imports
+# -------------------------------------------------
+import os
+from datetime import datetime
+from typing import List, Optional, AsyncGenerator
+
+from fastapi import FastAPI, Depends, HTTPException, Header, BackgroundTasks
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from geoalchemy2.functions import ST_MakePoint, ST_SetSRID
+
 from .db import AsyncSessionLocal, init_db, Event, AirQuality
-from .cache import cache
-from .ai_agent import prediction_summary
+print("🚀 RUNNING ASYNC API BACKEND (api.py)")
 
-
-# -------------------------------------------------------------------
+# -------------------------------------------------
 # App
-# -------------------------------------------------------------------
-
+# -------------------------------------------------
 app = FastAPI(
     title="DisasterScope Backend",
     version="1.0.0",
-    description="Disaster monitoring, ingestion & prediction API"
+    description="Disaster & Air-Quality Ingestion API"
 )
 
+# -------------------------------------------------
+# API KEY
+# -------------------------------------------------
+INGEST_API_KEY = os.getenv("INGEST_API_KEY", "Theking123")
 
-# -------------------------------------------------------------------
-# DB Dependency (THIS is where get_db lives)
-# -------------------------------------------------------------------
+async def verify_api_key(
+    x_ingest_key: str = Header(..., alias="X-INGEST-KEY")
+):
+    if x_ingest_key != INGEST_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
 
+# -------------------------------------------------
+# DB Dependency
+# -------------------------------------------------
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         yield session
 
-
 @app.on_event("startup")
-async def on_startup():
+async def startup():
     await init_db()
 
+# -------------------------------------------------
+# Helpers
+# -------------------------------------------------
+def to_utc_naive(dt: Optional[datetime]) -> datetime:
+    if dt is None:
+        return datetime.utcnow()
+    if dt.tzinfo:
+        return dt.replace(tzinfo=None)
+    return dt
 
-# -------------------------------------------------------------------
+def make_geom(lat: Optional[float], lon: Optional[float]):
+    if lat is None or lon is None:
+        return None
+    return ST_SetSRID(ST_MakePoint(lon, lat), 4326)
+
+# -------------------------------------------------
+# Schemas
+# -------------------------------------------------
+class EventCreate(BaseModel):
+    source: str
+    event_type: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    magnitude: Optional[float] = None
+    severity: Optional[str] = None
+    event_time: Optional[datetime] = None
+    location_accuracy: Optional[str] = None
+
+class AirQualityCreate(BaseModel):
+    source: str
+    location: str
+    parameter: str
+    value: float
+    unit: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    measured_at: Optional[datetime] = None
+
+# -------------------------------------------------
 # Health
-# -------------------------------------------------------------------
-
+# -------------------------------------------------
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
 
-
-# -------------------------------------------------------------------
-# Events (READ)
-# -------------------------------------------------------------------
-
+# -------------------------------------------------
+# READ – Events (GeoJSON)
+# -------------------------------------------------
 @app.get("/api/events")
 async def get_events(
     db: AsyncSession = Depends(get_db),
-    type: Optional[str] = Query(default=None),
-    location: Optional[str] = Query(default=None),
-    start: Optional[datetime] = Query(default=None),
-    end: Optional[datetime] = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=500),
+    limit: int = 200
 ):
-    stmt = select(Event)
+    result = await db.execute(
+        select(Event).order_by(Event.event_time.desc()).limit(limit)
+    )
+    rows = result.scalars().all()
 
-    if type:
-        stmt = stmt.where(Event.type == type)
-    if location:
-        stmt = stmt.where(Event.location == location)
-    if start:
-        stmt = stmt.where(Event.timestamp >= start)
-    if end:
-        stmt = stmt.where(Event.timestamp <= end)
+    features = []
+    for e in rows:
+        if e.latitude is None or e.longitude is None:
+            continue
 
-    stmt = stmt.order_by(Event.timestamp.desc()).limit(limit)
+        features.append({
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [e.longitude, e.latitude],
+            },
+            "properties": {
+                "id": e.id,
+                "source": e.source,
+                "event_type": e.event_type,
+                "title": e.title,
+                "magnitude": e.magnitude,
+                "severity": e.severity,
+                "event_time": e.event_time.isoformat() if e.event_time else None,
+            }
+        })
 
-    result = await db.execute(stmt)
-    return result.scalars().all()
+    return JSONResponse({
+        "type": "FeatureCollection",
+        "features": features
+    })
 
+# -------------------------------------------------
+# Background Task: Async DB Insert
+# -------------------------------------------------
+async def insert_events_background(events_data: List[dict]):
+    """Background task to insert events into database asynchronously"""
+    async with AsyncSessionLocal() as session:
+        try:
+            for e_data in events_data:
+                session.add(Event(
+                    source=e_data["source"],
+                    event_type=e_data["event_type"],
+                    title=e_data.get("title"),
+                    description=e_data.get("description"),
+                    latitude=e_data.get("latitude"),
+                    longitude=e_data.get("longitude"),
+                    magnitude=e_data.get("magnitude"),
+                    severity=e_data.get("severity"),
+                    event_time=to_utc_naive(e_data.get("event_time")),
+                    location_accuracy=e_data.get("location_accuracy"),
+                    geom=make_geom(e_data.get("latitude"), e_data.get("longitude")),
+                ))
+            
+            await session.flush()
+            await session.commit()
+            print(f"✅ Background insert complete: {len(events_data)} events")
+        except Exception as e:
+            print(f"❌ Background insert failed: {e}")
+            await session.rollback()
+            raise
 
-@app.get("/api/events/{event_id}")
-async def get_event(event_id: int, db: AsyncSession = Depends(get_db)):
-    stmt = select(Event).where(Event.id == event_id)
-    result = await db.execute(stmt)
-    event = result.scalar_one_or_none()
+# -------------------------------------------------
+# WRITE – Events (Bulk)
+# -------------------------------------------------
+@app.post("/api/events/bulk")
+async def create_events_bulk(
+    events: List[EventCreate],
+    background_tasks: BackgroundTasks,
+    authorized: None = Depends(verify_api_key),
+):
+    # Convert Pydantic models to dicts for background task
+    events_data = [
+        {
+            "source": e.source,
+            "event_type": e.event_type,
+            "title": e.title,
+            "description": e.description,
+            "latitude": e.latitude,
+            "longitude": e.longitude,
+            "magnitude": e.magnitude,
+            "severity": e.severity,
+            "event_time": e.event_time,
+            "location_accuracy": e.location_accuracy,
+        }
+        for e in events
+    ]
+    
+    # Add background task - returns immediately
+    background_tasks.add_task(insert_events_background, events_data)
+    
+    # Return immediately without waiting for DB commit
+    return {"status": "accepted", "count": len(events)}
 
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    return event
-
-
-# -------------------------------------------------------------------
-# Events (INGEST)
-# -------------------------------------------------------------------
-
-@app.post("/api/events/ingest")
-async def ingest_events(
-    events: List[dict],
+# -------------------------------------------------
+# WRITE – Air Quality
+# -------------------------------------------------
+@app.post("/api/air-quality")
+async def create_air_quality(
+    records: List[AirQualityCreate],
     db: AsyncSession = Depends(get_db),
+    authorized: None = Depends(verify_api_key),
 ):
-    inserted = 0
-
-    for e in events:
-        event = Event(
-            type=e.get("type"),
-            location=e.get("location"),
-            lat=e.get("lat"),
-            lon=e.get("lon"),
-            severity=e.get("severity"),
-            timestamp=_parse_dt(e.get("timestamp")),
-        )
-        db.add(event)
-        inserted += 1
-
-    await db.commit()
-    return {"status": "ok", "inserted": inserted}
-
-
-# -------------------------------------------------------------------
-# Air Quality (READ)
-# -------------------------------------------------------------------
-
-@app.get("/api/air-quality")
-async def get_air_quality(
-    db: AsyncSession = Depends(get_db),
-    location: Optional[str] = Query(default=None),
-    start: Optional[datetime] = Query(default=None),
-    end: Optional[datetime] = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=500),
-):
-    stmt = select(AirQuality)
-
-    if location:
-        stmt = stmt.where(AirQuality.location == location)
-    if start:
-        stmt = stmt.where(AirQuality.timestamp >= start)
-    if end:
-        stmt = stmt.where(AirQuality.timestamp <= end)
-
-    stmt = stmt.order_by(AirQuality.timestamp.desc()).limit(limit)
-
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-
-# -------------------------------------------------------------------
-# Air Quality (INGEST)
-# -------------------------------------------------------------------
-
-@app.post("/api/air-quality/ingest")
-async def ingest_air_quality(
-    records: List[dict],
-    db: AsyncSession = Depends(get_db),
-):
-    inserted = 0
-
     for r in records:
-        aq = AirQuality(
-            location=r.get("location"),
-            lat=r.get("lat"),
-            lon=r.get("lon"),
-            aqi=r.get("aqi"),
-            timestamp=_parse_dt(r.get("timestamp")),
-        )
-        db.add(aq)
-        inserted += 1
+        db.add(AirQuality(
+            source=r.source,
+            location=r.location,
+            parameter=r.parameter,
+            value=r.value,
+            unit=r.unit,
+            latitude=r.latitude,
+            longitude=r.longitude,
+            measured_at=to_utc_naive(r.measured_at),
+            geom=make_geom(r.latitude, r.longitude),
+        ))
 
     await db.commit()
-    return {"status": "ok", "inserted": inserted}
+    return {"status": "inserted", "count": len(records)}
 
 
-# -------------------------------------------------------------------
-# Prediction Summary
-# -------------------------------------------------------------------
 
-@app.get("/api/predictions/summary")
-async def get_prediction_summary(
-    db: AsyncSession = Depends(get_db),
-    days: int = Query(default=7, ge=1, le=30),
-):
-    cache_key = f"prediction_summary:{days}"
-    cached = cache.get(cache_key)
-    if cached:
-        return cached
-
-    since = datetime.utcnow() - timedelta(days=days)
-
-    events_stmt = select(Event).where(Event.timestamp >= since)
-    aqi_stmt = select(AirQuality).where(AirQuality.timestamp >= since)
-
-    events_result = await db.execute(events_stmt)
-    aqi_result = await db.execute(aqi_stmt)
-
-    events = events_result.scalars().all()
-    aqis = aqi_result.scalars().all()
-
-    summary = prediction_summary(events, aqis, days)
-    cache.set(cache_key, summary)
-
-    return summary
-
-
-# -------------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------------
-
-def _parse_dt(value):
-    if not value:
-        return None
-    if isinstance(value, datetime):
-        return value
-    try:
-        return datetime.fromisoformat(value)
-    except Exception:
-        return None
-
-
-@app.post("/api/events/ingest")
-async def ingest_events(
-    events: List[dict],
-    db: AsyncSession = Depends(get_db),
-):
-    inserted = 0
-
-    for e in events:
-        event = Event(
-            type=e.get("type", "unknown"),
-            location=e.get("location", "unknown"),
-            lat=e.get("lat"),
-            lon=e.get("lon"),
-            severity=e.get("severity", 0.0),
-            timestamp=datetime.utcnow(),
-        )
-
-        db.add(event)
-        inserted += 1
-
-    await db.commit()
-    return {"status": "ok", "inserted": inserted}
-
-
-#db.py
 
 """
-Database setup and models for DisasterScope.
-Async SQLAlchemy configuration.
+Database setup and models for DisasterScope
+Async SQLAlchemy + PostGIS (WebGIS-ready)
 """
 
+# -------------------------------------------------
+# Standard library
+# -------------------------------------------------
 import os
 from datetime import datetime
+
+# -------------------------------------------------
+# Third-party
+# -------------------------------------------------
 from dotenv import load_dotenv
 
 from sqlalchemy import (
@@ -273,33 +428,44 @@ from sqlalchemy import (
     Index,
 )
 from sqlalchemy.ext.asyncio import (
-    create_async_engine,
     AsyncSession,
+    create_async_engine,
 )
 from sqlalchemy.orm import (
     declarative_base,
     sessionmaker,
 )
 
+from geoalchemy2 import Geometry
+
 # -------------------------------------------------
 # Environment
 # -------------------------------------------------
-
 load_dotenv()
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "sqlite+aiosqlite:///./disasters.db"
+    "postgresql+asyncpg://postgres:Gondal.io@localhost:5432/disasterscope",
 )
 
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set")
+
+# Ensure async driver is used for async SQLAlchemy
+if DATABASE_URL.startswith("postgresql://") and not DATABASE_URL.startswith("postgresql+asyncpg://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+    print("⚠️  Converted postgresql:// to postgresql+asyncpg:// for async support")
+
+print("DB URL:", DATABASE_URL)
+
 # -------------------------------------------------
-# Engine & Session
+# Engine & Session (ASYNC)
 # -------------------------------------------------
 
 engine = create_async_engine(
     DATABASE_URL,
-    echo=False,
-    future=True,
+    echo=False,              # set True only for SQL debugging
+    pool_pre_ping=True,
 )
 
 AsyncSessionLocal = sessionmaker(
@@ -315,100 +481,74 @@ Base = declarative_base()
 # -------------------------------------------------
 
 class Event(Base):
-    __tablename__ = "events"
+    __tablename__ = "disaster_events"
 
-    id = Column(Integer, primary_key=True, index=True)
-    type = Column(String, index=True)
-    location = Column(String, index=True)
-    lat = Column(Float, nullable=True)
-    lon = Column(Float, nullable=True)
-    severity = Column(Float)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    # --- Core identity ---
+    id = Column(Integer, primary_key=True)
 
-    __table_args__ = (
-        Index("ix_events_type_location_ts", "type", "location", "timestamp"),
+    # --- Metadata ---
+    source = Column(String, index=True)
+    event_type = Column(String, index=True, nullable=False)
+
+    title = Column(String)
+    description = Column(String)
+    severity = Column(String)
+
+    magnitude = Column(Float)
+
+    # --- Time ---
+    event_time = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # --- Spatial (explicit + geometry) ---
+    latitude = Column(Float)
+    longitude = Column(Float)
+    location_accuracy = Column(String, nullable=True)  # e.g., "country_centroid", "exact"
+
+    geom = Column(
+        Geometry("POINT", srid=4326),
+        nullable=True,   # IMPORTANT: allow missing geometry
     )
+
+    
 
 
 class AirQuality(Base):
     __tablename__ = "air_quality"
 
     id = Column(Integer, primary_key=True, index=True)
-    location = Column(String, index=True)
-    lat = Column(Float, nullable=True)
-    lon = Column(Float, nullable=True)
-    aqi = Column(Float)
-    timestamp = Column(DateTime, default=datetime.utcnow)
 
-    __table_args__ = (
-        Index("ix_air_quality_location_ts", "location", "timestamp"),
+    source = Column(String, index=True)
+    location = Column(String, index=True)
+    parameter = Column(String, index=True)
+
+    value = Column(Float)
+    unit = Column(String)
+
+    measured_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    geom = Column(
+        Geometry("POINT", srid=4326),
+        nullable=True,
+
+    
     )
 
 # -------------------------------------------------
-# Init DB
+# Database init (SAFE: schema already exists)
 # -------------------------------------------------
 
 async def init_db() -> None:
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(
+            lambda sync_conn: Base.metadata.create_all(bind=sync_conn)
+        )
 
 
-#ai.py
-
-"""
-AI agent for DisasterScope (Layer 2).
-
-Rule-based, interpretable prediction logic operating on
-historical disaster and air quality data.
-"""
-
-from typing import List, Dict
 
 
-def prediction_summary(
-    events: List,
-    air_quality: List,
-    period_days: int
-) -> Dict:
-    """
-    Generate an interpretable risk summary over a time window.
-
-    Rules:
-    - Risk increases with average severity and AQI
-    - Based on simple thresholds (no ML yet)
-    """
-
-    total_events = len(events)
-
-    avg_severity = (
-        sum(e.severity for e in events) / total_events
-        if total_events > 0 else 0.0
-    )
-
-    avg_aqi = (
-        sum(a.aqi for a in air_quality) / len(air_quality)
-        if air_quality else 0.0
-    )
-
-    # Rule-based risk assessment
-    if avg_severity >= 7.0 or avg_aqi >= 150:
-        risk = "High"
-    elif avg_severity >= 4.0 or avg_aqi >= 100:
-        risk = "Medium"
-    else:
-        risk = "Low"
-
-    return {
-        "period_days": period_days,
-        "total_events": total_events,
-        "avg_severity": round(avg_severity, 2),
-        "avg_aqi": round(avg_aqi, 2),
-        "risk_level": risk,
-    }
-
-
-#main.py
-
+#MAIN.py
 
 """
 DisasterScope – Minimal FastAPI + PostGIS (Single File)
@@ -418,6 +558,7 @@ DisasterScope – Minimal FastAPI + PostGIS (Single File)
 # Imports
 # -------------------------------------------------
 import os
+import asyncio
 from datetime import datetime
 
 from fastapi import FastAPI, Depends, HTTPException, Header
@@ -432,8 +573,10 @@ from sqlalchemy import (
 from sqlalchemy.orm import sessionmaker, declarative_base
 from geoalchemy2 import Geometry
 from geoalchemy2.functions import ST_MakePoint, ST_SetSRID, ST_AsGeoJSON
-
 from dotenv import load_dotenv
+
+from backend.app.task.ingestion import ingestion_loop
+
 
 # -------------------------------------------------
 # Environment
@@ -471,6 +614,13 @@ class Event(Base):
 # FastAPI
 # -------------------------------------------------
 app = FastAPI(title="DisasterScope API")
+
+# -------------------------------------------------
+# Startup: Background Ingestion
+# -------------------------------------------------
+@app.on_event("startup")
+async def start_background_ingestion():
+    asyncio.create_task(ingestion_loop())
 
 # -------------------------------------------------
 # Dependencies
@@ -540,45 +690,3 @@ def ingest_event(
     db.commit()
 
     return {"status": "inserted"}
-
-
-
-
-#cache.py 
-
-
-"""
-Simple in-memory caching with expiration for DisasterScope.
-"""
-
-import time
-from typing import Any, Optional
-
-
-class SimpleCache:
-    def __init__(self, expiration_seconds: int = 300):
-        self.store: dict[str, tuple[Any, float]] = {}
-        self.expiration = expiration_seconds
-
-    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
-        expires_at = time.time() + (ttl if ttl is not None else self.expiration)
-        self.store[key] = (value, expires_at)
-
-    def get(self, key: str) -> Optional[Any]:
-        item = self.store.get(key)
-        if not item:
-            return None
-
-        value, expiry = item
-        if time.time() < expiry:
-            return value
-
-        # expired
-        del self.store[key]
-        return None
-
-    def clear(self) -> None:
-        self.store.clear()
-
-
-cache = SimpleCache(expiration_seconds=300)

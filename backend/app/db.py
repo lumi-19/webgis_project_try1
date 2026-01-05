@@ -46,6 +46,11 @@ DATABASE_URL = os.getenv(
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
 
+# Ensure async driver is used for async SQLAlchemy
+if DATABASE_URL.startswith("postgresql://") and not DATABASE_URL.startswith("postgresql+asyncpg://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+    print("⚠️  Converted postgresql:// to postgresql+asyncpg:// for async support")
+
 print("DB URL:", DATABASE_URL)
 
 # -------------------------------------------------
@@ -93,6 +98,7 @@ class Event(Base):
     # --- Spatial (explicit + geometry) ---
     latitude = Column(Float)
     longitude = Column(Float)
+    location_accuracy = Column(String, nullable=True)  # e.g., "country_centroid", "exact"
 
     geom = Column(
         Geometry("POINT", srid=4326),
