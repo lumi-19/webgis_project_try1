@@ -129,6 +129,7 @@ def fetch_usgs_earthquakes(limit: int = 25) -> List[Dict[str, Any]]:
                 "event_type": "earthquake",
                 "title": props.get("place", "Earthquake"),
                 "severity": "high" if (props.get("mag") or 0) >= 6 else "moderate",
+                "magnitude": props.get("mag"),
                 "latitude": lat,
                 "longitude": lon,
                 "event_time": datetime.fromtimestamp(
@@ -152,17 +153,22 @@ def main():
         print("⚠️ No disasters to ingest")
         return
 
-    resp = requests.post(
-        f"{BACKEND_URL}/api/events/bulk",
-        json=disasters,
-        headers=HEADERS,
-        timeout=20,
-    )
+    try:
+        resp = requests.post(
+            f"{BACKEND_URL}/api/events/bulk",
+            json=disasters,
+            headers=HEADERS,
+            timeout=20,
+        )
+    except requests.exceptions.ConnectionError:
+        print("❌ Backend not reachable — is FastAPI running?")
+        return
 
     if resp.ok:
         print(f"🚀 Ingested {len(disasters)} disaster events")
     else:
         print(f"❌ Backend error: {resp.status_code} {resp.text}")
+
 
 if __name__ == "__main__":
     main()
